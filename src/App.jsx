@@ -6,6 +6,13 @@ import {
   onAuthStateChanged,
 } from "firebase/auth";
 import {
+  getApiKey,
+  setApiKey,
+  erstelleZusammenfassung,
+  kategorisiereDatei,
+  extrahiereDocxBuffer,
+} from "./claude";
+import {
   collection,
   onSnapshot,
   addDoc,
@@ -25,11 +32,33 @@ const KATEGORIEN = [
   { id: "sonstige",     label: "Sonstige",     icon: "📁" },
 ];
 
+// ─── Verlängerungs-Logik ──────────────────────────────────────────────────────
+// Gibt das nächste relevante Vertragsende zurück (ggf. nach mehrfacher Verlängerung)
+function naechstesVertragsende(v) {
+  if (!v.ende) return null;
+  const frist         = parseInt(v.kuendigungsfrist) || 0;
+  const verlaengerung = parseInt(v.verlaengerung)    || 0;
+  const heute         = new Date();
+
+  let ende = new Date(v.ende);
+
+  if (!verlaengerung) return ende;
+
+  // Vorwärts rollen bis die Kündigungsfrist wieder in der Zukunft liegt
+  while (true) {
+    const kuendigungBis = new Date(ende);
+    kuendigungBis.setMonth(kuendigungBis.getMonth() - frist);
+    if (kuendigungBis >= heute) break;
+    ende.setMonth(ende.getMonth() + verlaengerung);
+  }
+  return ende;
+}
+
 // ─── Ampel-Logik ─────────────────────────────────────────────────────────────
 function getAmpel(v) {
   if (!v.ende) return "grau";
   const heute = new Date();
-  const ende = new Date(v.ende);
+  const ende  = naechstesVertragsende(v);
   const frist = parseInt(v.kuendigungsfrist) || 0;
   const kuendigungBis = new Date(ende);
   kuendigungBis.setMonth(kuendigungBis.getMonth() - frist);
@@ -49,7 +78,7 @@ function getAmpelLabel(ampel) {
 
 function naechsteKuendigung(v) {
   if (!v.ende || !v.kuendigungsfrist) return null;
-  const ende = new Date(v.ende);
+  const ende  = naechstesVertragsende(v);
   const frist = parseInt(v.kuendigungsfrist) || 0;
   const d = new Date(ende);
   d.setMonth(d.getMonth() - frist);
@@ -73,13 +102,13 @@ export default function App() {
   const [authLoading, setAuthLoading] = useState(true);
   const [vertraege, setVertraege] = useState([]);
 
-  const [view, setView] = useState("dashboard");     // dashboard | liste | detail | form
+  const [view, setView] = useState("dashboard");     // dashboard | liste | detail | form | import
   const [aktiveKat, setAktiveKat] = useState(null);
   const [aktiversVertrag, setAktiversVertrag] = useState(null);
   const [formModus, setFormModus] = useState("neu"); // neu | bearbeiten
   const [loeschenId, setLoeschenId] = useState(null);
 
-  // Auth
+  // Firebase Auth
   useEffect(() => {
     return onAuthStateChanged(auth, (u) => {
       setUser(u);
@@ -127,20 +156,23 @@ export default function App() {
     setAktiveKat(null);
     setAktiversVertrag(null);
   }
-
   // ── Firestore Aktionen ──────────────────────────────────────────────────────
   async function vertragSpeichern(daten) {
     const payload = { ...daten, geaendertAm: serverTimestamp() };
-    if (formModus === "neu") {
-      await addDoc(collection(db, "vertraege"), {
-        ...payload,
-        erstelltAm: serverTimestamp(),
-      });
-      setView("liste");
-    } else {
-      await updateDoc(doc(db, "vertraege", aktiversVertrag.id), payload);
-      setAktiversVertrag({ ...aktiversVertrag, ...daten });
-      setView("detail");
+    try {
+      if (formModus === "neu") {
+        await addDoc(collection(db, "vertraege"), {
+          ...payload,
+          erstelltAm: serverTimestamp(),
+        });
+        setView("liste");
+      } else {
+        await updateDoc(doc(db, "vertraege", aktiversVertrag.id), payload);
+        setAktiversVertrag({ ...aktiversVertrag, ...daten });
+        setView("detail");
+      }
+    } catch (e) {
+      alert("Fehler beim Speichern:\n" + e.message);
     }
   }
 
@@ -420,7 +452,12 @@ function VertragKarte({ vertrag: v, onClick }) {
         )}
       </div>
 
-      {v.notizen && (
+      {v.zusammenfassung && (
+        <div className="vertrag-karte-notiz" style={{ fontStyle: "italic", opacity: 0.85 }}>
+          🤖 {v.zusammenfassung}
+        </div>
+      )}
+      {!v.zusammenfassung && v.notizen && (
         <div className="vertrag-karte-notiz">💬 {v.notizen}</div>
       )}
     </div>
@@ -476,6 +513,14 @@ function VertragDetail({ vertrag: v, onBearbeiten, onLoeschen }) {
             <span>{v.kuendigungsfrist ? `${v.kuendigungsfrist} Monate` : "–"}</span>
           </div>
           <div className="detail-field">
+            <label>Auto. Verlängerung</label>
+            <span>{v.verlaengerung ? `${v.verlaengerung} Monate` : "–"}</span>
+          </div>
+          <div className="detail-field">
+            <label>Nächstes Vertragsende</label>
+            <span>{formatDatumKurz(naechstesVertragsende(v))}</span>
+          </div>
+          <div className="detail-field">
             <label>Kündigung bis spätestens</label>
             <span>{nk ? formatDatumKurz(nk) : "–"}</span>
           </div>
@@ -514,6 +559,14 @@ function VertragDetail({ vertrag: v, onBearbeiten, onLoeschen }) {
         </div>
       )}
 
+      {/* KI-Zusammenfassung */}
+      {v.zusammenfassung && (
+        <div className="detail-section">
+          <div className="detail-section-title">🤖 KI-Zusammenfassung</div>
+          <div className="notiz-box" style={{ fontStyle: "italic" }}>{v.zusammenfassung}</div>
+        </div>
+      )}
+
       {/* Notizen */}
       {v.notizen && (
         <div className="detail-section">
@@ -542,9 +595,12 @@ function VertragForm({ vertrag, modus, defaultKategorie, onSpeichern, onAbbreche
   const [beginn,           setBeginn]          = useState(init.beginn           || "");
   const [ende,             setEnde]            = useState(init.ende             || "");
   const [kuendigungsfrist, setKuendigungsfrist]= useState(init.kuendigungsfrist || "");
+  const [verlaengerung,    setVerlaengerung]   = useState(init.verlaengerung    || "");
   const [wert,             setWert]            = useState(init.wert             || "");
   const [ansprechpartner,  setAnsprechpartner] = useState(init.ansprechpartner  || "");
   const [notizen,          setNotizen]         = useState(init.notizen          || "");
+  const [zusammenfassung,  setZusammenfassung] = useState(init.zusammenfassung  || "");
+  const [zsLaden,          setZsLaden]         = useState(false);
   const [dokumente,        setDokumente]       = useState(
     Array.isArray(init.dokumente) && init.dokumente.length > 0
       ? init.dokumente
@@ -562,14 +618,30 @@ function VertragForm({ vertrag, modus, defaultKategorie, onSpeichern, onAbbreche
     setDokumente((prev) => prev.filter((_, idx) => idx !== i));
   }
 
+  async function zsGenerieren() {
+    if (!getApiKey()) { alert("Bitte zuerst den Claude API-Schlüssel eingeben."); return; }
+    setZsLaden(true);
+    try {
+      const text = await erstelleZusammenfassung({
+        kategorie, partner, dokumente,
+        beginn, ende, kuendigungsfrist, wert, status, notizen,
+      });
+      setZusammenfassung(text);
+    } catch (e) {
+      alert("Fehler beim Generieren:\n" + e.message);
+    } finally {
+      setZsLaden(false);
+    }
+  }
+
   async function absenden(e) {
     e.preventDefault();
     setLaden(true);
     const saubereDoks = dokumente.filter((d) => d.name || d.url);
     await onSpeichern({
       name, kategorie, partner, status,
-      beginn, ende, kuendigungsfrist, wert,
-      ansprechpartner, notizen,
+      beginn, ende, kuendigungsfrist, verlaengerung, wert,
+      ansprechpartner, notizen, zusammenfassung,
       dokumente: saubereDoks,
     });
     setLaden(false);
@@ -626,6 +698,10 @@ function VertragForm({ vertrag, modus, defaultKategorie, onSpeichern, onAbbreche
             <input type="number" min="0" value={kuendigungsfrist} onChange={(e) => setKuendigungsfrist(e.target.value)} placeholder="z.B. 3" />
           </div>
           <div className="form-field">
+            <label>Auto. Verlängerung (Monate, 0 = keine)</label>
+            <input type="number" min="0" value={verlaengerung} onChange={(e) => setVerlaengerung(e.target.value)} placeholder="z.B. 12" />
+          </div>
+          <div className="form-field">
             <label>Vertragswert / Kosten</label>
             <input value={wert} onChange={(e) => setWert(e.target.value)} placeholder="z.B. 450 €/Monat" />
           </div>
@@ -634,7 +710,7 @@ function VertragForm({ vertrag, modus, defaultKategorie, onSpeichern, onAbbreche
 
       {/* Dokumente */}
       <div className="form-section">
-        <div className="form-section-title">📎 Dokumente (OneDrive-Links)</div>
+        <div className="form-section-title">📎 Dokumente (Google Drive-Links)</div>
         {dokumente.map((dok, i) => (
           <div key={i} className="doc-eintrag">
             <input
@@ -643,7 +719,7 @@ function VertragForm({ vertrag, modus, defaultKategorie, onSpeichern, onAbbreche
               onChange={(e) => dokAktualisieren(i, "name", e.target.value)}
             />
             <input
-              placeholder="SharePoint/OneDrive-Link (https://…)"
+              placeholder="Google Drive-Link (https://…)"
               value={dok.url}
               onChange={(e) => dokAktualisieren(i, "url", e.target.value)}
               style={{ flex: 2 }}
@@ -657,7 +733,7 @@ function VertragForm({ vertrag, modus, defaultKategorie, onSpeichern, onAbbreche
           </div>
         ))}
         <button type="button" className="btn-ghost" style={{ fontSize: 13, alignSelf: "flex-start" }} onClick={dokHinzufuegen}>
-          + Dokument hinzufügen
+          + Leeres Feld hinzufügen
         </button>
       </div>
 
@@ -673,8 +749,22 @@ function VertragForm({ vertrag, modus, defaultKategorie, onSpeichern, onAbbreche
             <label>Notizen</label>
             <textarea value={notizen} onChange={(e) => setNotizen(e.target.value)} placeholder="Besonderheiten, Vereinbarungen, Hinweise …" rows={3} />
           </div>
+          <div className="form-field full">
+            <div style={{ display: "flex", alignItems: "center", gap: 8, marginBottom: 4 }}>
+              <label style={{ margin: 0 }}>🤖 KI-Zusammenfassung</label>
+              <button type="button" className="btn-ghost" style={{ fontSize: 12, padding: "3px 10px" }}
+                onClick={zsGenerieren} disabled={zsLaden}>
+                {zsLaden ? "Wird generiert …" : "Generieren"}
+              </button>
+            </div>
+            <textarea value={zusammenfassung} onChange={(e) => setZusammenfassung(e.target.value)}
+              placeholder="Automatisch mit KI generieren oder manuell eingeben …" rows={3} />
+          </div>
         </div>
       </div>
+
+      {/* API-Schlüssel */}
+      <ApiKeyEingabe />
 
       <div className="form-actions">
         <button type="button" className="btn-ghost" onClick={onAbbrechen}>Abbrechen</button>
@@ -686,6 +776,45 @@ function VertragForm({ vertrag, modus, defaultKategorie, onSpeichern, onAbbreche
   );
 }
 
+// ─── API-Key Eingabe (wiederverwendbar) ──────────────────────────────────────
+function ApiKeyEingabe({ style }) {
+  const [key, setKey] = useState(getApiKey);
+  const [sichtbar, setSichtbar] = useState(false);
+  const [gespeichert, setGespeichert] = useState(false);
+
+  function speichern() {
+    setApiKey(key);
+    setGespeichert(true);
+    setTimeout(() => setGespeichert(false), 2000);
+  }
+
+  return (
+    <div className="form-section" style={style}>
+      <div className="form-section-title">🔑 Claude API-Schlüssel</div>
+      <div style={{ display: "flex", gap: 8, alignItems: "center" }}>
+        <input
+          type={sichtbar ? "text" : "password"}
+          value={key}
+          onChange={(e) => setKey(e.target.value)}
+          placeholder="sk-ant-…"
+          style={{ flex: 1, fontFamily: "monospace", fontSize: 13 }}
+        />
+        <button type="button" className="btn-ghost" style={{ fontSize: 12, padding: "6px 10px" }}
+          onClick={() => setSichtbar((v) => !v)}>
+          {sichtbar ? "Verbergen" : "Zeigen"}
+        </button>
+        <button type="button" className="btn-primary" style={{ fontSize: 13, padding: "6px 14px" }}
+          onClick={speichern}>
+          {gespeichert ? "✓ Gespeichert" : "Speichern"}
+        </button>
+      </div>
+      <div style={{ fontSize: 12, color: "var(--text)", marginTop: 6, opacity: 0.7 }}>
+        Wird nur lokal im Browser gespeichert. Nie übertragen.
+      </div>
+    </div>
+  );
+}
+
 // ─── Löschen-Modal ────────────────────────────────────────────────────────────
 function LoeschenModal({ name, onBestaetigen, onAbbrechen }) {
   return (
@@ -694,7 +823,7 @@ function LoeschenModal({ name, onBestaetigen, onAbbrechen }) {
         <h3>🗑️ Vertrag löschen?</h3>
         <p>
           <strong>"{name}"</strong> wird unwiderruflich gelöscht.
-          Die Originaldokumente in OneDrive bleiben unberührt.
+          Die Originaldokumente in Google Drive bleiben unberührt.
         </p>
         <div className="modal-actions">
           <button className="btn-ghost" onClick={onAbbrechen}>Abbrechen</button>

@@ -503,6 +503,84 @@ button:active { opacity: 0.7; }
 }
 .leer-icon { font-size: 36px; margin-bottom: 8px; }
 
+/* ── SharePoint Picker ─────────────────────────────────────── */
+.sp-trennlinie {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  color: var(--text);
+  font-size: 12px;
+}
+.sp-trennlinie::before,
+.sp-trennlinie::after {
+  content: "";
+  flex: 1;
+  height: 1px;
+  background: var(--border);
+}
+.btn-sp {
+  background: var(--accent-bg);
+  color: var(--accent);
+  border: 1px solid var(--accent-border);
+  border-radius: 8px;
+  padding: 9px 14px;
+  font-size: 13px;
+  font-weight: 600;
+  width: 100%;
+}
+.sp-picker { width: 100%; }
+.sp-ladetext { color: var(--text); font-size: 13px; padding: 8px 0; }
+.sp-fehler {
+  color: var(--rot);
+  font-size: 13px;
+  padding: 8px;
+  background: var(--rot-bg);
+  border-radius: 8px;
+}
+.sp-offen {
+  border: 1px solid var(--accent-border);
+  border-radius: 10px;
+  overflow: hidden;
+  background: var(--bg);
+}
+.sp-kopf {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 8px 12px;
+  background: var(--accent-bg);
+  border-bottom: 1px solid var(--accent-border);
+}
+.sp-pfad { font-size: 12px; color: var(--accent); font-weight: 600; }
+.sp-liste {
+  max-height: 260px;
+  overflow-y: auto;
+  display: flex;
+  flex-direction: column;
+}
+.sp-eintrag {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 9px 14px;
+  border-bottom: 1px solid var(--border);
+  font-size: 13px;
+  cursor: pointer;
+  transition: background 0.1s;
+}
+.sp-eintrag:last-child { border-bottom: none; }
+.sp-eintrag:hover { background: var(--accent-bg); }
+.sp-ordner { color: var(--accent); font-weight: 500; }
+.sp-datei-name {
+  flex: 1;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  color: var(--text-h);
+  margin-right: 8px;
+}
+.sp-leer { padding: 16px; color: var(--text); font-size: 13px; text-align: center; }
+
 /* ── Responsive ────────────────────────────────────────── */
 @media (max-width: 480px) {
   .kat-grid { grid-template-columns: 1fr 1fr; }
